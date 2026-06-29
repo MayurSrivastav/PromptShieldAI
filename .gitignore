@@ -1,0 +1,26 @@
+﻿# ===== Secrets - NEVER commit these =====
+backend/src/main/resources/application.yml
+backend/src/main/resources/application.yaml
+backend/cp.txt
+**/*.env
+.env
+
+# ===== Backend (Java/Maven) build output =====
+backend/target/
+**/target/
+
+# ===== Frontend (React) dependencies and build =====
+frontend/node_modules/
+**/node_modules/
+frontend/build/
+**/build/
+
+# ===== OS/editor files =====
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.iml
+
+# ===== Logs =====
+*.log
