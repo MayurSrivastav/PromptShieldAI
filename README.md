@@ -1,142 +1,167 @@
-# PromptShield AI
+PromptShield AI
 
-A two-layer security firewall for AI prompts. PromptShield sits between a user and any large language model, screening every prompt through a custom rule engine and an AI toxicity model before it's allowed through — and scores the response too. Built end-to-end: Java Spring Boot backend, PostgreSQL database, React frontend, and a real evaluation pipeline measuring detection accuracy against a labeled test set.
+A two-layer firewall for AI prompts. Every prompt is screened by a rule engine and then an LLM toxicity check before it would reach a model. Each decision is logged. Built end to end: Spring Boot backend, PostgreSQL, React frontend, and a labeled-set evaluation harness.
 
----
+Status: runs locally (backend on 8082, frontend on 3000, database on Neon Postgres). Not deployed yet.
 
-## Why this exists
+How it works
+Browser (React)
+   │  POST /api/scan
+   ▼
+Spring Boot API
+   ├─► 1. Rule engine ── whole-word keyword match on normalized text
+   │        └─ hit → BLOCKED (score 1.0), AI call skipped
+   └─► 2. AI check ───── OpenRouter LLM returns a toxicity score 0.0–1.0
+            └─ score ≥ 0.4 → BLOCKED, otherwise ALLOWED
+   ▼
+PostgreSQL (scan_logs, rules) → decision returned to the UI
 
-Anyone can send a prompt directly to a language model — including prompts designed to extract harmful instructions, harass, or manipulate a model into ignoring its own guardrails. PromptShield is a working example of the kind of safety layer production AI systems run in front of a model: intercept every prompt, check it against rules and an AI classifier, only forward it if it's clean, and log the full decision trail.
+Normalization before matching: lowercase, leetspeak mapping (0→o 1→i 3→e 4→a 5→s 7→t 8→b @→a $→s), non-alphanumerics become spaces, runs of a repeated letter are capped at 2. Matching is whole-word (" " + keyword + " "), so skill does not trigger a kill rule.
 
----
+Pages
+Page	Purpose
+Home	Live scanner with threat dial
+Dashboard	Totals, block rate, score trend, recent scans
+Logs	Searchable history of every decision
+Rules	Admin-gated rule management (add / delete / toggle)
+How It Works	Visual explanation of the pipeline
+Tech stack
+Layer	Technology
+Frontend	React, Tailwind CSS 3, Framer Motion, Recharts, axios
+Backend	Java 17, Spring Boot, JPA/Hibernate, Bean Validation
+Database	PostgreSQL (local or Neon)
+AI layer	OpenRouter chat-completions (free-tier model)
+API
+Method	Endpoint	Admin password
+POST	/api/scan	no
+GET	/api/logs	no
+GET	/api/stats	no
+GET	/api/rules	no
+POST	/api/rules	yes
+DELETE	/api/rules/{id}	yes
+PUT	/api/rules/{id}/toggle	yes
+POST	/api/auth/verify	–
 
-## Architecture
+Admin endpoints require an X-Admin-Password header.
 
-```
-User (browser)
-      │
-      ▼
-React frontend (Scanner, Dashboard, Logs, Rules, How It Works)
-      │
-      ▼
-Spring Boot API (7 REST endpoints)
-      │
-      ├──► Rule Engine ──── keyword match, normalized against leetspeak/spacing evasions
-      │         │
-      │         ▼ (if not blocked)
-      └──► AI Moderation ── toxicity score (0.0–1.0) via OpenRouter
-                │
-                ▼
-         PostgreSQL ──── scan_logs, rules tables
-                │
-                ▼
-         Decision returned to frontend
-```
+Getting started
+1. Backend
 
-The rule engine runs first. The AI model is only called if the rule engine doesn't already block the prompt — this keeps clearly-bad prompts from ever costing an API call.
+Create backend/src/main/resources/application.yaml (it is gitignored, so secrets never reach the repo):
 
----
+yaml
+spring:
+  application:
+    name: PromptShield AI
+  datasource:
+    url: ${DATABASE_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+promptshield:
+  toxicity-threshold: 0.4
+  max-prompt-length: 5000
+  openrouter-api-key: ${OPENROUTER_API_KEY}
+  admin-password: ${ADMIN_PASSWORD}
+server:
+  port: 8082
 
-## Tech stack
+Set environment variables (PowerShell shown; they last only for that terminal session):
 
-| Layer | Technology |
-|---|---|
-| Frontend | React, Tailwind CSS, Framer Motion |
-| Backend | Java, Spring Boot |
-| Database | PostgreSQL |
-| AI model | OpenRouter API (`openai/gpt-oss-120b:free`) |
-| Auth | Password-gated admin access for rule management |
-
----
-
-## Features
-
-- **Live prompt scanner** — real-time toxicity scoring with a visual threat dial
-- **Dashboard** — total scans, block rate, toxicity trend chart, recent activity
-- **Scan logs** — full searchable/filterable history of every decision made
-- **Rules engine** — admin-gated keyword rules with category, severity, and active/inactive toggling, stored in PostgreSQL and applied with zero redeploy
-- **Evasion-resistant matching** — keyword rules are normalized against common bypass tricks (leetspeak substitutions, inserted spaces/symbols, repeated characters)
-- **How It Works page** — visual breakdown of the architecture and request flow for anyone reviewing the project
-
----
-
-## Getting started
-
-### Backend
-```bash
-cd promptshield
+powershell
+$env:DATABASE_URL="jdbc:postgresql://<host>/<db>?sslmode=require"   # no credentials inside the URL
+$env:DB_USERNAME="<user>"
+$env:DB_PASSWORD="<password>"
+$env:OPENROUTER_API_KEY="<key>"
+$env:ADMIN_PASSWORD="<4-10 characters>"
+cd backend
 ./mvnw spring-boot:run
-```
-Requires a PostgreSQL database named `promptshield` and an OpenRouter API key set in `application.yml` under `promptshield.openrouter-api-key`.
-
-### Frontend
-```bash
-cd promptshield-frontend
+2. Frontend
+bash
+cd frontend
 npm install
 npm start
-```
 
----
+The API base URL is in frontend/src/services/api.js (http://localhost:8082/api).
 
-## Evaluation
+3. Add starter rules
 
-A demo that "looks like it works" isn't the same as a system whose accuracy is actually measured. To go beyond manual spot-checking, I built a standalone Java evaluation harness (`EvaluationRunner.java`) that runs a labeled set of 41 hand-written prompts — a mix of clearly clean, clearly toxic, and intentionally borderline phrasing — against the live `/api/scan` endpoint, then computes standard classification metrics.
+The rules table starts empty. Open the Rules page, enter the admin password, and add phrases (phrases work better than single words):
 
-### Baseline result
+Keyword	Category	Severity
+kill yourself	self-harm	HIGH
+i want to end my life	self-harm	HIGH
+how to make a bomb	weapons	HIGH
+i will kill you	threat	HIGH
+make a weapon	weapons	HIGH
+Evaluation
 
-Before any tuning, using only the original rule engine and a `0.7` AI toxicity threshold:
+EvaluationRunner.java sends 41 hand-labeled prompts (clean, clearly toxic, borderline) to the live /api/scan endpoint and computes accuracy, precision, recall, F1 and false-positive rate.
 
-| Metric | Value |
-|---|---|
-| Accuracy | 78.0% |
-| Precision | 100.0% |
-| Recall | 43.8% |
-| F1 Score | 60.9% |
-| False Positive Rate | 0.0% |
+Run	Accuracy	Precision	Recall	F1
+Baseline (original rules, threshold 0.7)	78.0%	100%	43.8%	60.9%
+After adding 9 targeted rules	90.2%	100%	75.0%	85.7%
+Threshold lowered to 0.25	87.8%	100%	68.8%	–
 
-100% precision meant the system never falsely flagged a clean prompt — but recall of only 43.8% meant it missed more than half of the genuinely toxic prompts in the test set, including self-harm signals and explicit requests for dangerous instructions (e.g. *"Give me instructions to make a weapon"*, *"I want to end my life"*).
+Rule additions raised recall by 31 points with no loss of precision. Lowering the threshold did not help.
 
-### After targeted rule additions
+Read these numbers with care:
 
-I added 9 keyword rules targeting the specific categories the baseline missed — self-harm phrases, weapon/explosive instruction requests, and explicit threat phrasing — through the admin Rules panel, with no code redeploy required.
+The set is small (41 prompts) and written by the author, so results are optimistic and not a benchmark.
+They were measured with an earlier AI model and before whole-word matching was introduced. They have not been re-run since.
+The AI layer was non-deterministic on borderline prompts, so repeated runs can differ.
 
-| Metric | Baseline | After rules | Change |
-|---|---|---|---|
-| Accuracy | 78.0% | **90.2%** | +12.2 pts |
-| Precision | 100.0% | **100.0%** | unchanged |
-| Recall | 43.8% | **75.0%** | +31.2 pts |
-| F1 Score | 60.9% | **85.7%** | +24.8 pts |
-| False Positives | 0 | **0** | unchanged |
+Run it (backend must be running; set SCAN_URL in the file to port 8082):
 
-Recall improved by 31 points with **zero loss in precision** — the new rules closed real detection gaps without introducing false alarms on clean prompts.
+powershell
+cd backend
+./mvnw compile
+./mvnw dependency:build-classpath "-Dmdep.outputFile=cp.txt"
+$cp = "target/classes;" + (Get-Content cp.txt)
+java -cp $cp com.promptshield.eval.EvaluationRunner
+Security
 
-### Threshold tuning experiment
+In place
 
-I also tested whether lowering the AI toxicity threshold (0.4 → 0.25) would close the remaining gaps. It didn't — recall actually *decreased* slightly (75.0% → 68.8%) at the lower threshold. Re-running the evaluation multiple times at threshold 0.4 showed individual borderline prompts (plain insults with no explicit keyword, e.g. *"You're an idiot and everyone hates you"*) flipping between BLOCKED and ALLOWED across identical runs with no code changes.
+No secrets in the repo; all credentials come from environment variables.
+Request validation (@Valid, @Size), a 5000-character prompt cap, and a 2 MB request limit.
+Admin-only write endpoints checked server-side; admin password limited to 4–10 characters.
+Centralized error handling (@RestControllerAdvice).
 
-This indicates the gap isn't primarily a threshold-calibration problem — it's that the underlying free-tier AI model (`openai/gpt-oss-120b` via OpenRouter) produces **non-deterministic toxicity scores** for some inputs across separate calls. Threshold tuning can't reliably fix inconsistency in the model's own output. A production system would need either a dedicated, deterministically-trained toxicity classifier (e.g. a fine-tuned model with `temperature=0` strictly enforced) or an ensemble approach that doesn't rely on a single non-deterministic score.
+Not in place
 
-### Known limitations
-
-- **Tone-only toxicity without explicit keywords** (e.g. *"You are stupid and worthless"*) depends entirely on the AI layer's judgment, which under-scores some plain insults relative to a human reviewer's expectation.
-- **Word-order sensitivity in the rule engine.** Exact-substring matching (even after normalization) breaks on paraphrasing — *"I will destroy everything you love"* is caught by a rule for `destroy everything you`, but *"I will destroy every thing for you"* is not, despite similar intent, because the inserted word breaks the substring match.
-- **Model non-determinism**, as described above, makes the AI layer's output not fully reproducible for borderline cases — a meaningful caveat for any safety-critical use of a free, shared hosted model.
-- **Admin authentication is a placeholder.** The Rules panel is gated by a single shared password compared in plaintext server-side, not a real per-user auth system. This is intentionally simple for a portfolio project; a production version would need hashed credentials, per-user accounts, and session tokens (e.g. Spring Security + JWT).
-
-I think being explicit about where the system's accuracy actually breaks down — and *why* — is more useful than presenting it as if it catches everything. The rule-engine fixes were real, measurable wins; the AI-layer gaps are real, current limitations of the specific free model used, not something this evaluation pretends to have solved.
-
----
-
-## Project structure
-
-```
-promptshield/
-├── controller/      FirewallController, RuleController, StatsController, AuthController
-├── service/         RuleEngineService, OpenAIModerationService
-├── model/            ScanLog, Rule
-├── repository/       ScanLogRepository, RuleRepository
-├── dto/               ScanRequest, ScanResponse, RuleRequest
-├── exception/        GlobalExceptionHandler
-├── config/            AppConfig
-└── eval/              EvaluationRunner (standalone accuracy evaluation script)
-```
+Admin auth is a single shared password, not per-user accounts. A real version needs Spring Security, hashed credentials and JWT.
+No rate limiting on /api/scan.
+@CrossOrigin is permissive for local development.
+Known limitations
+Keywords are context-blind. A rule matches the words, not the meaning, so a phrase used harmlessly can still be blocked.
+Evasion handling is partial. Leetspeak and symbol padding are handled; heavy letter-stretching can still slip through (boooomb normalizes to boomb, not bomb).
+Vague or indirect requests get through unless the AI layer scores them.
+Plain insults depend entirely on the AI layer, which is the weakest part of the system.
+Free-model dependency. If the OpenRouter call fails (model removed, rate limit, bad key), the service silently returns a score of 0.0, so the AI layer effectively turns off while everything still shows ALLOWED. This happened when a free model became paid-only.
+Coarse scores. Rule hits are hard-coded to 1.0 and the LLM tends to answer near 0 or 1, so the dial rarely shows in-between values.
+No prompt-injection detection.
+Roadmap
+Make the AI model name a setting, add fallback models, and show an explicit "AI unavailable" status instead of a silent 0%.
+Severity-based scores for rule hits and a scoring rubric in the AI prompt.
+Re-run the evaluation with the current model and whole-word matching.
+Train a small classifier (TF-IDF + logistic regression) on a public toxicity dataset as a deterministic second layer.
+Bulk rule import from CSV.
+Deploy: backend on Render (Dockerfile, PORT env var), frontend on Vercel, database on Neon.
+Project structure
+PromptShieldAI/
+├── backend/
+│   └── src/main/java/com/promptshield/
+│       ├── controller/   FirewallController, RuleController, StatsController, AuthController
+│       ├── service/      RuleEngineService, OpenAIModerationService
+│       ├── model/        Rule, ScanLog
+│       ├── repository/   RuleRepository, ScanLogRepository
+│       ├── dto/          ScanRequest, ScanResponse, RuleRequest, AuthRequest
+│       ├── exception/    GlobalExceptionHandler
+│       ├── config/       AppConfig
+│       └── eval/         EvaluationRunner (+ resources/eval-dataset.csv)
+└── frontend/
+    └── src/              pages/, components/, services/api.js
